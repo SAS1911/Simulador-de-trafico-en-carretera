@@ -91,27 +91,22 @@ public class CarreteraMonitor implements Carretera {
   public void tick() {
     monitor.enter();
     try {
-      boolean notificar = false;
-
-      for (Map.Entry<String, Pair<Pos, Integer>> entry : coches.entrySet()) {
-        String id = entry.getKey();
-        Pair<Pos, Integer> info = entry.getValue();
-        int tks = info.getSecond();
-        if (tks > 0) {
-          coches.put(id, new Pair<>(info.getFirst(), tks - 1));
-          if (tks - 1 == 0) {
-            notificar = true;
-          }
+        for (Map.Entry<String, Pair<Pos, Integer>> entry : coches.entrySet()) {
+            String id = entry.getKey();
+            Pair<Pos, Integer> info = entry.getValue();
+            int tks = info.getSecond();
+            if (tks > 0) {
+                coches.put(id, new Pair<>(info.getFirst(), tks - 1));
+                if (tks - 1 == 0) {
+                    esperaCircular.signal();  // Despierta a cada coche individualmente
+                }
+            }
         }
-      }
-
-      if (notificar) {
-        esperaCircular.signal(); // despertar a un coche que pueda avanzar
-      }
     } finally {
-      monitor.leave();
+        monitor.leave();
     }
   }
+
 
   private Set<Integer> carrilesLibres(int segmento) {
     Set<Integer> ocupados = new HashSet<>();
