@@ -1,144 +1,141 @@
 package cc.carretera;
 
-import es.upm.babel.cclib.Monitor;
+import es.upm.aedlib.Pair;
+import java.util.concurrent.locks.*;
 import java.util.HashMap;
 import java.util.HashSet;
 import java.util.Map;
 import java.util.Set;
 
 public class CarreteraMonitor implements Carretera {
-  private final int SEGMENTOS;
-  private final int CARRILES;
+	private final int SEGMENTOS;
+	private final int CARRILES;
 
-  private final Map<String, Pair<Pos, Integer>> coches = new HashMap<>();
+	private final Map<String, Pair<Pos, Integer>> coches = new HashMap<>();
+	private final Lock lock = new ReentrantLock();
+	private final Condition puedeEntrar = lock.newCondition();
+	private final Condition puedeAvanzar = lock.newCondition();
+	private final Condition puedeCircular = lock.newCondition();
 
-  private final Monitor monitor = new Monitor();
-  private final Monitor.Cond esperaEntrar = monitor.newCond();
-  private final Monitor.Cond esperaAvanzar = monitor.newCond();
-  private final Monitor.Cond esperaCircular = monitor.newCond();
+	public CarreteraMonitor(int segmentos, int carriles) {
+		this.SEGMENTOS = segmentos;
+		this.CARRILES = carriles;
+	}
 
-  public CarreteraMonitor(int segmentos, int carriles) {
-    this.SEGMENTOS = segmentos;
-    this.CARRILES = carriles;
-  }
+	public Pos entrar(String id, int tks) {
+		lock.lock();
+		try {
+			while (carrilesLibres(1).isEmpty()) {
+				puedeEntrar.await();
+			}
 
-  public Pos entrar(String id, int tks) {
-    monitor.enter();
-    try {
-      while (carrilesLibres(1).isEmpty()) {
-        esperaEntrar.await();
-      }
-      int carril = carrilesLibres(1).iterator().next();
-      Pos pos = new Pos(1, carril);
-      coches.put(id, new Pair<>(pos, tks));
-      return pos;
-    } finally {
-      monitor.leave();
-    }
-  }
+			Set<Integer> libres = carrilesLibres(1);
+			int carrilElegido = libres.iterator().next();
+			Pos pos = new Pos(1, carrilElegido);
+			coches.put(id, new Pair<>(pos, tks));
 
-  public Pos avanzar(String id, int tks) {
-    monitor.enter();
-    try {
-      Pair<Pos, Integer> info = coches.get(id);
-      if (info == null)
-        throw new IllegalArgumentException("Coche no encontrado: " + id);
+			return pos;
+		} catch (InterruptedException e) {
+			Thread.currentThread().interrupt();
+			throw new RuntimeException(e);
+		} finally {
+			lock.unlock();
+		}
+	}
 
-      Pos pos = info.getFirst();
-      int seg = pos.getSegmento();
-      int carril = pos.getCarril();
+	public Pos avanzar(String id, int tks) {
+		lock.lock();
+		try {
+			Pair<Pos, Integer> info = coches.get(id);
 
-      if (seg + 1 > SEGMENTOS)
-        return pos;
+			int siguienteSegmento = info.getLeft().getSegmento() + 1;
+			while (carrilesLibres(siguienteSegmento).isEmpty()) {
+				puedeAvanzar.await();
+			}
 
-      while (!carrilesLibres(seg + 1).contains(carril)) {
-        esperaAvanzar.await();
-      }
+			Set<Integer> libres = carrilesLibres(siguienteSegmento);
+			Pos nuevaPos = new Pos(siguienteSegmento, libres.iterator().next());
+			coches.put(id, new Pair<>(nuevaPos, tks));
 
-      Pos nuevaPos = new Pos(seg + 1, carril);
-      coches.put(id, new Pair<>(nuevaPos, tks));
+			// Señalar que ha quedado una posicion libre
+			if (info.getLeft().getSegmento() == 1) {
+				puedeEntrar.signal();
+			} else {
+				puedeAvanzar.signal();
+			}
 
-      esperaEntrar.signal(); // puede liberar hueco en el primer segmento
-      esperaAvanzar.signal(); // otro coche puede avanzar
-      return nuevaPos;
-    } finally {
-      monitor.leave();
-    }
-  }
+			return nuevaPos;
+		} catch (InterruptedException e) {
+			Thread.currentThread().interrupt();
+			throw new RuntimeException(e);
+		} finally {
+			lock.unlock();
+		}
+	}
 
-  public void circulando(String id) {
-    monitor.enter();
-    try {
-      while (coches.containsKey(id) && coches.get(id).getSecond() > 0) {
-        esperaCircular.await();
-      }
-    } finally {
-      monitor.leave();
-    }
-  }
+	public void circulando(String id) {
+		lock.lock();
+		try {
+			Pair<Pos, Integer> infoCoche = coches.get(id);
 
-  public void salir(String id) {
-    monitor.enter();
-    try {
-      coches.remove(id);
-      esperaEntrar.signal();
-      esperaAvanzar.signal();
-    } finally {
-      monitor.leave();
-    }
-  }
+			while (infoCoche.getRight() > 0) {
+				puedeCircular.await();
+				infoCoche = coches.get(id); // Actualizar la informacion del coche después del tick
+			}
+		} catch (InterruptedException e) {
+			Thread.currentThread().interrupt();
+			throw new RuntimeException(e);
+		} finally {
+			lock.unlock();
+		}
+	}
 
-  public void tick() {
-    monitor.enter();
-    try {
-        for (Map.Entry<String, Pair<Pos, Integer>> entry : coches.entrySet()) {
-            String id = entry.getKey();
-            Pair<Pos, Integer> info = entry.getValue();
-            int tks = info.getSecond();
-            if (tks > 0) {
-                coches.put(id, new Pair<>(info.getFirst(), tks - 1));
-                if (tks - 1 == 0) {
-                    esperaCircular.signal();  // Despierta a cada coche individualmente
-                }
-            }
-        }
-    } finally {
-        monitor.leave();
-    }
-  }
+	public void salir(String id) {
+		lock.lock();
+		try {
+			coches.remove(id);
+			// Señalar que ha quedado un espacio libre
 
+			puedeAvanzar.signal();
 
-  private Set<Integer> carrilesLibres(int segmento) {
-    Set<Integer> ocupados = new HashSet<>();
-    for (Pair<Pos, Integer> info : coches.values()) {
-      if (info.getFirst().getSegmento() == segmento) {
-        ocupados.add(info.getFirst().getCarril());
-      }
-    }
+		} finally {
+			lock.unlock();
+		}
+	}
 
-    Set<Integer> libres = new HashSet<>();
-    for (int c = 1; c <= CARRILES; c++) {
-      if (!ocupados.contains(c))
-        libres.add(c);
-    }
-    return libres;
-  }
+	public void tick() {
+		lock.lock();
+		try {
+			// Reducimos ticks de todos los coches
+			for (Map.Entry<String, Pair<Pos, Integer>> entry : coches.entrySet()) {
+				String id = entry.getKey();
+				Pair<Pos, Integer> info = entry.getValue();
+				coches.put(id, new Pair<>(info.getLeft(), Math.max(0, info.getRight() - 1)));
+			}
 
-  private static class Pair<F, S> {
-    private final F first;
-    private final S second;
+			// Dejamos que circulen todos los coches
+			puedeCircular.signalAll();
 
-    public Pair(F first, S second) {
-      this.first = first;
-      this.second = second;
-    }
+		} finally {
+			lock.unlock();
+		}
+	}
 
-    public F getFirst() {
-      return first;
-    }
+	// Metodo auxiliar para ver los carriles libres de un segmento
+	private Set<Integer> carrilesLibres(int segmento) {
+		Set<Integer> ocupados = new HashSet<>();
+		for (Pair<Pos, Integer> info : coches.values()) {
+			if (info.getLeft().getSegmento() == segmento) {
+				ocupados.add(info.getLeft().getCarril());
+			}
+		}
 
-    public S getSecond() {
-      return second;
-    }
-  }
+		Set<Integer> libres = new HashSet<>();
+		for (int c = 1; c <= CARRILES; c++) {
+			if (!ocupados.contains(c)) {
+				libres.add(c);
+			}
+		}
+		return libres;
+	}
 }
