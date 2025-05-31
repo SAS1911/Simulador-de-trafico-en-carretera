@@ -1,161 +1,49 @@
 package cc.carretera;
 
 import org.jcsp.lang.*;
-import java.util.Map;
-import java.util.ArrayList;
-import java.util.HashMap;
-import java.util.Set;
-import java.util.HashSet;
+import java.util.*;
 
 public class CarreteraCSP implements Carretera {
-    private static final int SEGMENTOS = 5;
-    private static final int CARRILES = 3;
+    private final int SEGMENTOS;
+    private final int CARRILES;
 
-    // Canales para comunicación
-    private final One2OneChannel[] entraChans;
-    private final One2OneChannel[] avanzaChans;
-    private final One2OneChannel[] circulaChans;
-    private final One2OneChannel[] saleChans;
-    private final One2OneChannel tickChan;
+    // Canales para recibir solicitudes de coches y del reloj
+    private final Any2OneChannel entrarChan = Channel.any2one();
+    private final Any2OneChannel avanzarChan = Channel.any2one();
+    private final Any2OneChannel circulaChan = Channel.any2one();
+    private final Any2OneChannel salirChan = Channel.any2one();
+    private final Any2OneChannel tickChan = Channel.any2one();
 
-    // Proceso de la carretera
-    private final CSProcess procesoCarretera;
-
-    public CarreteraCSP() {
-        // Crear canales
-        entraChans = Channel.one2oneArray(10);
-        avanzaChans = Channel.one2oneArray(10);
-        circulaChans = Channel.one2oneArray(10);
-        saleChans = Channel.one2oneArray(10);
-        tickChan = Channel.one2one();
-
-        // Proceso principal
-        procesoCarretera = new CSProcess() {
-            public void run() {
-                // Estructuras de estado
-                Map<String, Pos> posiciones = new HashMap<>();
-                Map<String, Integer> ticksRestantes = new HashMap<>();
-                Map<Integer, Set<Integer>> ocupados = new HashMap<>();
-
-                // Inicializar ocupación
-                for (int seg = 1; seg <= SEGMENTOS; seg++) {
-                    ocupados.put(seg, new HashSet<>());
-                }
-
-                final Alternative alt = new Alternative(new AltingChannelInput[] {
-                        tickChan.in(),
-                        entraChans[0].in(),
-                        avanzaChans[0].in(),
-                        circulaChans[0].in(),
-                        saleChans[0].in()
-                });
-
-                while (true) {
-                    int index = alt.select();
-
-                    if (index == 0) {
-                        // Tick
-                        tickChan.in().read();
-
-                        for (String id : new ArrayList<>(ticksRestantes.keySet())) {
-                            int ticks = ticksRestantes.get(id);
-                            if (ticks > 0) {
-                                ticksRestantes.put(id, ticks - 1);
-                            }
-                        }
-                    } else if (index == 1) {
-                        // Entrar
-                        Object[] datos = (Object[]) entraChans[0].in().read();
-                        String id = (String) datos[0];
-                        int tks = (Integer) datos[1];
-
-                        int carrilLibre = -1;
-                        for (int c = 1; c <= CARRILES; c++) {
-                            if (!ocupados.get(1).contains(c)) {
-                                carrilLibre = c;
-                                break;
-                            }
-                        }
-
-                        if (carrilLibre != -1) {
-                            Pos pos = new Pos(1, carrilLibre);
-                            posiciones.put(id, pos);
-                            ticksRestantes.put(id, tks);
-                            ocupados.get(1).add(carrilLibre);
-                            entraChans[0].out().write(pos);
-                        }
-                    } else if (index == 2) {
-                        // Avanzar
-                        Object[] datos = (Object[]) avanzaChans[0].in().read();
-                        String id = (String) datos[0];
-                        int tks = (Integer) datos[1];
-
-                        Pos posActual = posiciones.get(id);
-                        int segActual = posActual.getSegmento();
-                        int carrilActual = posActual.getCarril();
-
-                        if (segActual < SEGMENTOS && ticksRestantes.get(id) == 0) {
-                            int siguienteSeg = segActual + 1;
-                            int nuevoCarril = -1;
-
-                            for (int c = 1; c <= CARRILES; c++) {
-                                if (!ocupados.get(siguienteSeg).contains(c)) {
-                                    nuevoCarril = c;
-                                    break;
-                                }
-                            }
-
-                            if (nuevoCarril != -1) {
-                                ocupados.get(segActual).remove(carrilActual);
-                                Pos nuevaPos = new Pos(siguienteSeg, nuevoCarril);
-                                posiciones.put(id, nuevaPos);
-                                ticksRestantes.put(id, tks);
-                                ocupados.get(siguienteSeg).add(nuevoCarril);
-                                avanzaChans[0].out().write(nuevaPos);
-                            }
-                        }
-                    } else if (index == 3) {
-                        // Circulando
-                        String id = (String) circulaChans[0].in().read();
-                        // No necesita respuesta
-                    } else if (index == 4) {
-                        // Salir
-                        String id = (String) saleChans[0].in().read();
-                        Pos pos = posiciones.get(id);
-
-                        if (pos != null && pos.getSegmento() == SEGMENTOS && ticksRestantes.get(id) == 0) {
-                            ocupados.get(SEGMENTOS).remove(pos.getCarril());
-                            posiciones.remove(id);
-                            ticksRestantes.remove(id);
-                        }
-                    }
-                }
-            }
-        };
+    public CarreteraCSP(int segmentos, int carriles) {
+        this.SEGMENTOS = segmentos;
+        this.CARRILES = carriles;
+        new ProcessManager(new CarreteraProceso()).start(); // Inicia el proceso CSP
     }
 
     @Override
     public Pos entrar(String id, int tks) {
         One2OneChannel resp = Channel.one2one();
-        entraChans[0].out().write(new Object[] { id, tks });
+        entrarChan.out().write(new Object[] { id, tks, resp });
         return (Pos) resp.in().read();
     }
 
     @Override
     public Pos avanzar(String id, int tks) {
         One2OneChannel resp = Channel.one2one();
-        avanzaChans[0].out().write(new Object[] { id, tks });
+        avanzarChan.out().write(new Object[] { id, tks, resp });
         return (Pos) resp.in().read();
     }
 
     @Override
     public void circulando(String id) {
-        circulaChans[0].out().write(id);
+        One2OneChannel resp = Channel.one2one();
+        circulaChan.out().write(new Object[] { id, resp });
+        resp.in().read();
     }
 
     @Override
     public void salir(String id) {
-        saleChans[0].out().write(id);
+        salirChan.out().write(id);
     }
 
     @Override
@@ -163,7 +51,175 @@ public class CarreteraCSP implements Carretera {
         tickChan.out().write(null);
     }
 
-    public void iniciar() {
-        new Parallel(new CSProcess[] { procesoCarretera }).run();
+    // Proceso principal de la carretera
+    private class CarreteraProceso implements CSProcess {
+        private final Map<String, Pos> posiciones = new HashMap<>(); // posiciones actuales
+        private final Map<String, Integer> ticksRestantes = new HashMap<>(); // ticks que faltan
+        private final Map<Integer, Set<Integer>> ocupados = new HashMap<>(); // carriles ocupados por segmento
+        private final Queue<Object[]> esperaEntrar = new LinkedList<>();
+        private final Queue<Object[]> esperaAvanzar = new LinkedList<>();
+        private final Map<String, One2OneChannel> esperandoCirculando = new HashMap<>();
+
+        public void run() {
+            for (int i = 1; i <= SEGMENTOS; i++) {
+                ocupados.put(i, new HashSet<Integer>());
+            }
+
+            AltingChannelInput[] entradas = {
+                    tickChan.in(), entrarChan.in(), avanzarChan.in(), circulaChan.in(), salirChan.in()
+            };
+
+            Alternative alt = new Alternative(entradas);
+
+            while (true) {
+                int index = alt.select();
+                switch (index) {
+                    case 0:
+                        procesarTick();
+                        break; // reloj
+                    case 1:
+                        procesarEntrar();
+                        break; // petición de entrada
+                    case 2:
+                        procesarAvanzar();
+                        break; // petición de avance
+                    case 3:
+                        procesarCirculando();
+                        break; // notificación de circulación
+                    case 4:
+                        procesarSalir();
+                        break; // notificación de salida
+                }
+            }
+        }
+
+        private void procesarTick() {
+            tickChan.in().read();
+            for (String id : new HashSet<>(ticksRestantes.keySet())) {
+                int nuevos = Math.max(0, ticksRestantes.get(id) - 1);
+                ticksRestantes.put(id, nuevos);
+                if (nuevos == 0 && esperandoCirculando.containsKey(id)) {
+                    esperandoCirculando.get(id).out().write(null);
+                    esperandoCirculando.remove(id);
+                }
+            }
+            intentarAvancesPendientes();
+            intentarEntradasPendientes();
+        }
+
+        private void procesarEntrar() {
+            Object[] msg = (Object[]) entrarChan.in().read();
+            String id = (String) msg[0];
+            int tks = (Integer) msg[1];
+            One2OneChannel resp = (One2OneChannel) msg[2];
+
+            if (intentarColocarEntrada(id, tks, resp))
+                return;
+            esperaEntrar.add(msg);
+        }
+
+        private void procesarAvanzar() {
+            Object[] msg = (Object[]) avanzarChan.in().read();
+            String id = (String) msg[0];
+            int tks = (Integer) msg[1];
+            One2OneChannel resp = (One2OneChannel) msg[2];
+
+            if (intentarAvance(id, tks, resp))
+                return;
+            esperaAvanzar.add(msg);
+        }
+
+        private void procesarCirculando() {
+            Object[] msg = (Object[]) circulaChan.in().read();
+            String id = (String) msg[0];
+            One2OneChannel resp = (One2OneChannel) msg[1];
+
+            if (ticksRestantes.get(id) == 0) {
+                resp.out().write(null);
+            } else {
+                esperandoCirculando.put(id, resp);
+            }
+        }
+
+        private void procesarSalir() {
+            String id = (String) salirChan.in().read();
+            Pos pos = posiciones.get(id);
+            if (pos != null && ticksRestantes.get(id) == 0) {
+                ocupados.get(pos.getSegmento()).remove(pos.getCarril());
+                posiciones.remove(id);
+                ticksRestantes.remove(id);
+                intentarEntradasPendientes();
+                intentarAvancesPendientes();
+            }
+        }
+
+        private void intentarEntradasPendientes() {
+            Queue<Object[]> nuevaCola = new LinkedList<>();
+            while (!esperaEntrar.isEmpty()) {
+                Object[] msg = esperaEntrar.poll();
+                String id = (String) msg[0];
+                int tks = (Integer) msg[1];
+                One2OneChannel resp = (One2OneChannel) msg[2];
+                if (!intentarColocarEntrada(id, tks, resp)) {
+                    nuevaCola.add(msg);
+                }
+            }
+            esperaEntrar.addAll(nuevaCola);
+        }
+
+        private boolean intentarColocarEntrada(String id, int tks, One2OneChannel resp) {
+            for (int c = 1; c <= CARRILES; c++) {
+                if (!ocupados.get(1).contains(c)) {
+                    Pos pos = new Pos(1, c);
+                    posiciones.put(id, pos);
+                    ticksRestantes.put(id, tks);
+                    ocupados.get(1).add(c);
+                    resp.out().write(pos);
+                    return true;
+                }
+            }
+            return false;
+        }
+
+        private void intentarAvancesPendientes() {
+            Queue<Object[]> nuevaCola = new LinkedList<>();
+            boolean huboCambio = false;
+            while (!esperaAvanzar.isEmpty()) {
+                Object[] msg = esperaAvanzar.poll();
+                String id = (String) msg[0];
+                int tks = (Integer) msg[1];
+                One2OneChannel resp = (One2OneChannel) msg[2];
+                if (!intentarAvance(id, tks, resp)) {
+                    nuevaCola.add(msg);
+                } else {
+                    huboCambio = true;
+                }
+            }
+            esperaAvanzar.addAll(nuevaCola);
+            if (huboCambio)
+                intentarAvancesPendientes();
+        }
+
+        private boolean intentarAvance(String id, int tks, One2OneChannel resp) {
+            Pos pos = posiciones.get(id);
+            if (ticksRestantes.get(id) > 0 || pos.getSegmento() >= SEGMENTOS) {
+                return false;
+            }
+            int sigSeg = pos.getSegmento() + 1;
+            for (int c = 1; c <= CARRILES; c++) {
+                if (!ocupados.get(sigSeg).contains(c)) {
+                    ocupados.get(pos.getSegmento()).remove(pos.getCarril());
+                    ocupados.get(sigSeg).add(c);
+                    Pos nueva = new Pos(sigSeg, c);
+                    posiciones.put(id, nueva);
+                    ticksRestantes.put(id, tks);
+                    resp.out().write(nueva);
+                    intentarEntradasPendientes();
+                    intentarAvancesPendientes();
+                    return true;
+                }
+            }
+            return false;
+        }
     }
 }
