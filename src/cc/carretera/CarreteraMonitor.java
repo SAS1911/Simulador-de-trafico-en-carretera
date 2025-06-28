@@ -5,7 +5,8 @@ import java.util.HashMap;
 import java.util.HashSet;
 import java.util.Map;
 import java.util.Map.Entry;
-import java.util.Set;import es.upm.aedlib.Pair;
+import java.util.Set;
+import es.upm.aedlib.Pair;
 import es.upm.babel.cclib.Monitor;
 import es.upm.babel.cclib.Monitor.Cond;
 
@@ -170,9 +171,9 @@ public class CarreteraMonitor implements Carretera {
 	public void desbloqueo() {
 		//booleano para solo hacer un signal por vez
 		boolean desbloqueado=false;
+		
 		//recorremos segmento por segmento (sirve para entrar (condSegmentos[0]) y los demás para avanzar)
-		//El ultimo no se comprueba porque no pueden avanzar desde ahi solo pueden salir y no tiene cpre
-		for(int i = 1; i < SEGMENTOS && !desbloqueado; i++) {
+		for(int i = 1; i <= SEGMENTOS && !desbloqueado; i++) {
 			//Si el segmento tiene carriles libres lo desbloqueamos para que un coche pueda avanzar a ese segmento
 			//como carriles libres empieza en 1 y condSegmentos en 0 ponemos i-1
 			if(!carrilesLibres(i).isEmpty()&&condSegmentos[i-1].waiting()>0&&!desbloqueado) {
@@ -181,7 +182,7 @@ public class CarreteraMonitor implements Carretera {
 				desbloqueado=true;
 			}
 		}
-		//SALIR CUANDO ENCUENTRA? 
+		
 		//Vamos coche por coche viendo si sus ticks estan en 0 se usa para desbloquear circulando
 		for(Entry<String, Pair<Pos, Integer>> coche : coches.entrySet()) {
 			if(coche.getValue().getRight() == 0 && condCoches.get(coche.getKey()).waiting() > 0 && !desbloqueado) {
